@@ -1,10 +1,15 @@
 import streamlit as st
 import json
 import boto3
+import requests
+
 
 S3_BUCKET = st.secrets["S3_BUCKET"]
 AWS_ACCESS_KEY = st.secrets["AWS_ACCESS_KEY"]
 AWS_SECRET_KEY = st.secrets["AWS_SECRET_KEY"]
+
+DATATRAILS_CLIENT = st.secrets["DATATRAILS_CLIENT"]
+DATATRAILS_SECRET = st.secrets["DATATRAILS_SECRET"]
 
 # Connect to the S3 bucket
 s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY)
@@ -23,7 +28,31 @@ def get_documents():
     return documents
     
 
+@st.cache_data
+def get_token():
+    import requests
+    import os
 
+    url = "https://app.datatrails.ai/archivist/iam/v1/appidp/token"
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'grant_type': 'client_credentials',
+        'client_id': DATATRAILS_CLIENT,
+        'client_secret': DATATRAILS_SECRET
+    }
+
+    response = requests.post(url, headers=headers, data=data)
+    print(response)
+    if response.status_code == 200:
+        response_json = response.json()
+        print(response_json)
+        
+        # Assuming you want to store the token in an environment variable
+        return response_json['access_token']
+        
 def search_documents(query):
     # Query the MongoDB collection for matching documents within the "parties" element
     # documents = collection.find({'parties': {'$elemMatch': {'$or': [{'mailto': query}, {'tel': query}]}}})
@@ -133,6 +162,22 @@ def main():
         if st.session_state.documents:
             st.title('Results')
 
+            st.subheader('Access History')
+            token = get_token()
+            assett_uuid = "6edf0ce4-0701-465d-b7c0-7f8b69f7807d"
+            url = f"https://app.datatrails.ai/archivist/v2/assets/{assett_uuid}/events"
+            authorization = f"Bearer {token}"
+
+            payload = {}
+            headers = {
+                'Authorization': authorization
+            }
+
+            response = requests.request("GET", url, headers=headers, data=payload)
+            if response.status_code is not 200:
+                st.error(f"Error: {response.status_code}")
+
+
             st.subheader('Summary')
             st.markdown("""
                         The following documents contain your email or phone number. 
@@ -187,6 +232,27 @@ def main():
                 # Display the full document in JSON format if the user clicks the "Show JSON" button
                 if st.button('Show vCon', key=doc['uuid']):
                     st.json(doc, expanded=False)
+                    
+            # Display the access history
+            events = response.json()['events']
+
+            st.subheader('Access History')
+            # Display the access history in a table
+            for event in events:
+                # Check to make sure that the event attributes are not empty
+                required_attributes = ['issuer', 'subject', 'action', 'hash']
+                if not all(attr in event['event_attributes'] for attr in required_attributes):
+                    continue
+                
+                st.markdown('---')
+                event_attributes = event['event_attributes']
+                st.write(f"Issued by: {event_attributes['issuer']}")
+                st.write(f"Issued at: {event['timestamp_declared']}")
+                st.write(f"Confirmation Status: {event['confirmation_status']}")
+                st.write(f"Subject: {event_attributes['subject']}")
+                st.write(f"Action: {event_attributes['action']}")
+                st.write(f"Hash: {event_attributes['hash']}")
+
         else:
             st.info('No matching documents found.')
 
